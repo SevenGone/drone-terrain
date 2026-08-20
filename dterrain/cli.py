@@ -3,117 +3,14 @@
 from __future__ import annotations
 
 import argparse
-import csv
-import re
 import sys
-from pathlib import Path
 
-from .classify import classify_frame
 from .config import load_config
-from .geo import build_track, match_coord, track_extent
+from .geo import build_track, track_extent
+from .pipeline import parse_coord, read_coords_csv, run_points, sample_points
 from .report import print_result, save_results
 from .srt import find_srt
-from .video import extract_frame, probe
-
-
-def _parse_coord(s: str):
-    parts = [p.strip() for p in str(s).split(",")]
-    if len(parts) != 2:
-        raise ValueError('--coord 格式应为 "lon,lat"，例如 "116.3281,40.0755"')
-    try:
-        lon = float(parts[0])
-        lat = float(parts[1])
-    except ValueError:
-        raise ValueError("--coord 解析失败：应为两个数字（lon,lat）")
-    if not -180 <= lon <= 180 or not -90 <= lat <= 90:
-        raise ValueError(f"坐标越界：经度 {lon}（应 -180~180）、纬度 {lat}（应 -90~90）；注意顺序为 lon,lat")
-    return lat, lon
-
-
-def _col(header, *names):
-    for n in names:
-        if n in header:
-            return header.index(n)
-    return None
-
-
-def _read_coords_csv(path: str):
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        rows = list(csv.reader(f))
-    if not rows:
-        raise ValueError(f"坐标清单 {path} 为空")
-    h = [c.strip().lower().lstrip("\ufeff") for c in rows[0]]
-    lon_i = _col(h, "lon", "lng", "long", "longitude", "x", "经度")
-    lat_i = _col(h, "lat", "latitude", "y", "纬度")
-    id_i = _col(h, "id", "name", "编号", "名称")
-    if lon_i is None or lat_i is None:
-        raise ValueError("坐标清单 CSV 需要 lon/lat 列（可识别表头：lon/lat/id/name）")
-
-    points = []
-    for i, row in enumerate(rows[1:], 1):
-        if not row or all(not (c or "").strip() for c in row):
-            continue
-        try:
-            lon = float(row[lon_i].strip())
-            lat = float(row[lat_i].strip())
-        except (ValueError, IndexError):
-            continue
-        pid = row[id_i].strip() if id_i is not None and id_i < len(row) and row[id_i].strip() else str(i)
-        points.append((pid, lat, lon))
-    if not points:
-        raise ValueError(f"坐标清单 {path} 中没有有效坐标行")
-    return points
-
-
-def _sample_points(track, duration, every, count):
-    if count:
-        n = max(2, int(count))
-        idxs = []
-        for i in range(n):
-            j = round(i * (len(track) - 1) / (n - 1))
-            if not idxs or idxs[-1] != j:
-                idxs.append(j)
-        return [(f"p{j:03d}", track[j].lat, track[j].lon) for j in idxs]
-    step = max(0.1, float(every))
-    ts, points = 0.0, []
-    while ts <= duration + 1e-9:
-        i = min(range(len(track)), key=lambda k: abs(track[k].video_ts - ts))
-        points.append((f"t={ts:.0f}s", track[i].lat, track[i].lon))
-        ts += step
-        if len(points) > 100000:
-            break
-    return points
-
-
-def _run_points(video, duration, track, config, out_dir, points, aligned_by):
-    out = Path(out_dir)
-    thumbs = out / "thumbnails"
-    thumbs.mkdir(parents=True, exist_ok=True)
-
-    results = []
-    for pid, lat, lon in points:
-        tp, dist, off = match_coord(track, lat, lon, config.max_dist_meters)
-        ts = max(0.0, min(tp.video_ts, duration - 0.001))
-        safe = re.sub(r"[^0-9A-Za-z_.\-]+", "_", str(pid))
-        frame = thumbs / f"{safe}.jpg"
-        extract_frame(video, ts, str(frame))
-        category, confidence, reason = classify_frame(str(frame), config.categories, config)
-        results.append({
-            "id": str(pid),
-            "lat": round(lat, 7),
-            "lon": round(lon, 7),
-            "video_ts": round(ts, 2),
-            "category": category,
-            "confidence": confidence,
-            "nearest_lat": round(tp.lat, 7),
-            "nearest_lon": round(tp.lon, 7),
-            "distance_m": round(dist, 1),
-            "off_route": bool(off),
-            "aligned_by": aligned_by,
-            "frame_path": str(frame),
-            "reason": reason,
-        })
-    return results
+from .video import probe
 
 
 def _cmd_info(args, config, track, duration, aligned_by, info):
@@ -132,8 +29,8 @@ def build_parser():
     common.add_argument("--video", required=True, help="无人机航拍视频文件")
     common.add_argument("--srt", help="大疆 .SRT 字幕（缺省按视频同名自动发现）")
     common.add_argument("--route", help="备用航线/航迹文件 .gpx/.csv/.kml")
-    common.add_argument("--model", help="云端视觉模型名")
-    common.add_argument("--api-base", help="OpenAI 兼容 API 地址，如 https://dashscope.aliyuncs.com/compatible-mode/v1")
+    common.add_argument("--model", help="云端模型名")
+    common.add_argument("--api-base", help="OpenAI 兼容 API 地址，默认 https://api.deepseek.com")
     common.add_argument("--api-key", help="API Key")
     common.add_argument("--categories", type=lambda s: [x.strip() for x in s.split(",") if x.strip()],
                         help="地貌分类，逗号分隔；最后一项为兜底")
@@ -150,7 +47,7 @@ def build_parser():
 
     parser = argparse.ArgumentParser(
         prog="dterrain",
-        description="无人机航拍视频 -> 坐标点位地形地貌识别（针对大疆 DJI，SRT 字幕为主坐标源）",
+        description="无人机航拍视频 -> 坐标点位地形地貌识别（DeepSeek 云端，支持大疆 SRT 或无 GPS 航线）",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -190,16 +87,16 @@ def main(argv=None):
             return _cmd_info(args, config, track, duration, aligned_by, info)
 
         if args.command == "single":
-            lat, lon = _parse_coord(args.coord)
+            lat, lon = parse_coord(args.coord)
             points = [("single", lat, lon)]
         elif args.command == "batch":
-            points = _read_coords_csv(args.coords)
+            points = read_coords_csv(args.coords)
         elif args.command == "sample":
-            points = _sample_points(track, duration, args.every, args.count)
+            points = sample_points(track, duration, args.every, args.count)
         else:
             raise RuntimeError(f"未知子命令 {args.command}")
 
-        results = _run_points(args.video, duration, track, config, args.out, points, aligned_by)
+        results = run_points(args.video, duration, track, config, args.out, points, aligned_by)
         for r in results:
             print_result(r)
         jp, cp = save_results(results, args.out)

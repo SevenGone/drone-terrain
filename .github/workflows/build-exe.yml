@@ -30,12 +30,22 @@ jobs:
           Copy-Item (Join-Path $ffdir "bin\ffmpeg.exe") bin\
           Copy-Item (Join-Path $ffdir "bin\ffprobe.exe") bin\
 
-      - name: Build exe
+      - name: Build GUI exe (windowed, 双击即用)
         run: |
-          python -m PyInstaller --noconfirm --clean --onefile --name dterrain --add-data "bin\ffmpeg.exe;bin" --add-data "bin\ffprobe.exe;bin" --paths dterrain main.py
+          python -m PyInstaller --noconfirm --clean --windowed --onefile --name dterrain --add-data "bin\ffmpeg.exe;bin" --add-data "bin\ffprobe.exe;bin" --paths dterrain gui_main.py
 
-      - name: Upload artifact
+      - name: Build CLI exe (console)
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --name dterrain-cli --add-data "bin\ffmpeg.exe;bin" --add-data "bin\ffprobe.exe;bin" --paths dterrain main.py
+
+      - name: Upload GUI artifact
         uses: actions/upload-artifact@v7
         with:
           name: dterrain-windows
           path: dist\dterrain.exe
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: dterrain-cli-windows
+          path: dist\dterrain-cli.exe
