@@ -1,0 +1,39 @@
+name: build-exe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Download ffmpeg
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_ext -Force
+          $ffdir = (Get-ChildItem -Directory ffmpeg_ext | Select-Object -First 1).FullName
+          New-Item -ItemType Directory -Force bin | Out-Null
+          Copy-Item (Join-Path $ffdir "bin\ffmpeg.exe") bin\
+          Copy-Item (Join-Path $ffdir "bin\ffprobe.exe") bin\
+
+      - name: Build exe
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --name dterrain --add-data "bin\ffmpeg.exe;bin" --add-data "bin\ffprobe.exe;bin" --paths dterrain main.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dterrain-windows
+          path: dist\dterrain.exe

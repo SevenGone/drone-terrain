@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dterrain"
+version = "0.1.0"
+description = "无人机航拍视频 -> 坐标点位地形地貌识别（针对大疆 DJI）"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.25",
+    "Pillow>=9.0",
+    "numpy>=1.21",
+]
+
+[project.scripts]
+dterrain = "dterrain.cli:main"
+
+[tool.setuptools]
+packages = ["dterrain"]
